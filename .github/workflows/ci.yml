@@ -19,18 +19,54 @@ jobs:
         node: ["22.13.0", "24"]
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node }}
+      - name: Validate release proposal
+        if: github.event_name == 'pull_request' && github.base_ref == 'main' && startsWith(github.head_ref, 'release/')
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          version=$(node -p 'require("./package.json").version')
+          test "$GITHUB_HEAD_REF" = "release/v$version"
+          test -s "docs/releases/v$version.md"
+          node -e 'const l = require("./package-lock.json"); if ([l.version, l.packages[""].version].some(v => v !== process.argv[1])) process.exit(1)' "$version"
+          test "$version" != "$(git show "${BASE_SHA}:package.json" | jq -r .version)"
       - run: npm ci
       - run: npm test
       - name: Verify committed build output
         run: test -z "$(git status --porcelain --untracked-files=all -- dist)"
 
-  release:
-    name: Publish GitHub release
-    needs: test
+  release-pr:
+    name: Identify merged release PR
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      approved: ${{ steps.pr.outputs.approved }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          branch="release/v$(node -p 'require("./package.json").version')"
+          prs=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls")
+          approved=$(jq --arg repo "$GITHUB_REPOSITORY" --arg sha "$GITHUB_SHA" --arg branch "$branch" \
+            'any(.[][]; .merged_at != null and .merge_commit_sha == $sha and .base.ref == "main" and
+              .head.repo.full_name == $repo and .head.ref == $branch)' <<< "$prs")
+          echo "approved=$approved" >> "$GITHUB_OUTPUT"
+
+  release:
+    name: Publish approved release
+    needs: [test, release-pr]
+    if: needs.release-pr.outputs.approved == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -39,14 +75,15 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Publish package version
+      - name: Publish reviewed release notes
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="v$(node -p 'require("./package.json").version')"
+          notes="docs/releases/$tag.md"
+          test -s "$notes"
           if git show-ref --verify --quiet "refs/tags/$tag"; then
-            git merge-base --is-ancestor "$tag" "$GITHUB_SHA"
-            gh release view "$tag" --json url --jq .url
-          else
-            gh release create "$tag" --target "$GITHUB_SHA" --title "$tag" --generate-notes
+            test "$(git rev-list -1 "$tag")" = "$GITHUB_SHA"
+            gh release view "$tag" --json url --jq .url && exit 0
           fi
+          gh release create "$tag" --target "$GITHUB_SHA" --title "$tag" --notes-file "$notes"

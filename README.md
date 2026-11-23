@@ -35,4 +35,6 @@ Build and test with `npm ci && npm test`. Consumers can install from a full Git 
 
 ## GitHub releases
 
-To release a new version, run `npm version patch --no-git-tag-version` (or use `minor` or `major`) and include the package and lockfile changes in the pull request. After CI passes on the merged commit, GitHub Actions publishes a release tagged with the package version, such as `v0.1.0`. Merges at an already released version keep the existing tag.
+Run `npm run release:pr -- patch` to open a dedicated release PR against `main`. Use `minor` or `major` for a larger bump. The command uses your authenticated Git and GitHub CLI and prepares the package version, lockfile and generated release notes in a temporary worktree.
+
+Review the version and edit `docs/releases/v<version>.md` on the PR branch as needed. Merging that PR authorizes publication. After both Node checks pass on the merged commit, CI tags that commit and publishes the reviewed notes. Ordinary PRs run CI and skip publication.
