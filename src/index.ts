@@ -18,9 +18,9 @@ export type ReportInput =
 
 export interface ReportIdentity {
   name: string;
-  callSite?: string;
+  callSite: string;
   code?: string;
-  level?: "info" | "warning" | "error" | "fatal";
+  level?: "error" | "fatal";
   traceId?: string;
   breadcrumbs?: readonly string[];
   tags?: Readonly<Record<string, string>>;
@@ -33,6 +33,7 @@ export interface ReporterOptions {
   environment: string;
   sampleRate: number;
   throttleMs: number;
+  dailyBudget: { handled: number; fatal: number };
   redact(input: ReportInput): ReportIdentity | null;
 }
 
@@ -47,35 +48,64 @@ export function createReporter(options?: ReporterOptions): Reporter {
   try {
     if (!options?.dsn) return noopReporter;
     const { module, release, environment, sampleRate, throttleMs, redact } = options;
+    const { handled, fatal } = options.dailyBudget;
+    if (![handled, fatal].every(limit => Number.isSafeInteger(limit) && limit >= 0)) return noopReporter;
     if (![module, release, environment].every(isLabel) || typeof redact !== "function" ||
         !Number.isFinite(sampleRate) || sampleRate < 0 || sampleRate > 1 ||
         !Number.isSafeInteger(throttleMs) || throttleMs < 0) return noopReporter;
 
     const transport = openTransport(options.dsn, { module, release, environment });
     const recent = new Map<string, number>();
+    const dayMs = 24 * 60 * 60 * 1000;
+    let resetAt = performance.now() + dayMs;
+    let remainingHandled = handled;
+    let remainingFatal = fatal;
     let closed = false;
 
     function capture(input: ReportInput): void {
       try {
-        if (closed || Math.random() >= sampleRate) return;
+        if (closed) return;
         const identity = redact(input);
         if (identity instanceof Promise) {
           void identity.catch(() => {});
           return;
         }
-        if (!identity || !isLabel(identity.name)) return;
-        if (identity.callSite !== undefined && !isLabel(identity.callSite)) return;
-        if (throttleMs > 0) {
-          const now = performance.now();
-          for (const [key, expiry] of recent) {
-            if (expiry > now) break;
-            recent.delete(key);
-          }
-          const key = JSON.stringify([input.kind, identity.name, identity.callSite]);
-          if (recent.has(key) || recent.size >= 1024) return;
-          recent.set(key, now + throttleMs);
+        if (!identity) return;
+        const { name, callSite, level } = identity;
+        if (!isLabel(name) || !isLabel(callSite)) return;
+        if (input.kind === "message" && level !== "error") return;
+        if (level !== undefined && level !== "error" && level !== "fatal") return;
+
+        const now = performance.now();
+        if (now >= resetAt) {
+          resetAt = now + dayMs;
+          remainingHandled = handled;
+          remainingFatal = fatal;
         }
-        transport.send(input.kind, identity);
+        const isFatal = level === "fatal";
+        let key: string | undefined;
+        if (isFatal) {
+          if (!remainingFatal) return;
+        } else {
+          if (!remainingHandled || Math.random() >= sampleRate) return;
+          if (throttleMs > 0) {
+            for (const [entry, expiry] of recent) {
+              if (expiry > now) break;
+              recent.delete(entry);
+            }
+            key = JSON.stringify([input.kind, name, callSite]);
+            if (recent.has(key) || recent.size >= 1024) return;
+          }
+        }
+
+        const queued = transport.send(input.kind, {
+          name, callSite, level, code: identity.code, tags: identity.tags,
+          traceId: identity.traceId, breadcrumbs: identity.breadcrumbs,
+        });
+        if (!queued) return;
+        if (isFatal) remainingFatal--;
+        else remainingHandled--;
+        if (key !== undefined) recent.set(key, now + throttleMs);
       } catch {
         // Discard events that cannot be classified or queued.
       }

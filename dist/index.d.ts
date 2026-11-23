@@ -18,9 +18,9 @@ export type ReportInput = {
 };
 export interface ReportIdentity {
     name: string;
-    callSite?: string;
+    callSite: string;
     code?: string;
-    level?: "info" | "warning" | "error" | "fatal";
+    level?: "error" | "fatal";
     traceId?: string;
     breadcrumbs?: readonly string[];
     tags?: Readonly<Record<string, string>>;
@@ -32,6 +32,10 @@ export interface ReporterOptions {
     environment: string;
     sampleRate: number;
     throttleMs: number;
+    dailyBudget: {
+        handled: number;
+        fatal: number;
+    };
     redact(input: ReportInput): ReportIdentity | null;
 }
 export declare const noopReporter: Reporter;

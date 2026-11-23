@@ -14,7 +14,9 @@ export function openTransport(dsn: string, deployment: Pick<ReporterOptions, "mo
     host: url.hostname, port: url.port, publicKey: url.username, pass: "",
     path: url.pathname.slice(1, url.pathname.lastIndexOf("/")), projectId: project,
   });
-  const transport = createTransport({ recordDroppedEvent() {} }, async ({ body }) => {
+  const bufferSize = 64;
+  let pending = 0;
+  const transport = createTransport({ bufferSize, recordDroppedEvent() {} }, async ({ body }) => {
     const response = await fetch(endpoint, {
       method: "POST", headers: { "content-type": "application/x-sentry-envelope" },
       body: typeof body === "string" ? body : Buffer.from(body),
@@ -32,40 +34,43 @@ export function openTransport(dsn: string, deployment: Pick<ReporterOptions, "mo
 
   function send(kind: ReportInput["kind"], identity: ReportIdentity) {
     const { name, callSite, code, traceId, level = "error" } = identity;
-    if (typeof name !== "string" || !name || name.length > 200) return;
-    if (callSite !== undefined && (typeof callSite !== "string" || !callSite || callSite.length > 200)) return;
-    if (!["info", "warning", "error", "fatal"].includes(level)) return;
+    // Reserve the last transport slot for a fatal exception.
+    if (pending >= (level === "fatal" ? bufferSize : bufferSize - 1)) return false;
     const tags: Record<string, string> = Object.create(null);
     for (const [key, value] of Object.entries(identity.tags ?? {})) {
-      if (!/^[\w.-]{1,32}$/.test(key) || typeof value !== "string" || value.length > 200) return;
+      if (!/^[\w.-]{1,32}$/.test(key) || typeof value !== "string" || value.length > 200) return false;
       tags[key] = value;
     }
     tags.module = deployment.module;
-    if (callSite !== undefined) tags.call_site = callSite;
+    tags.call_site = callSite;
     if (code !== undefined) {
-      if (typeof code !== "string" || code.length > 200) return;
+      if (typeof code !== "string" || code.length > 200) return false;
       tags.code = code;
     }
     const event: Event = {
       event_id: randomUUID().replaceAll("-", ""), timestamp: Date.now() / 1000,
       platform: "node", level, tags, release: deployment.release, environment: deployment.environment,
     };
-    event.fingerprint = [kind, name, callSite ?? "", code ?? ""];
+    event.fingerprint = [kind, name, callSite, code ?? ""];
     if (identity.breadcrumbs !== undefined) {
-      if (!Array.isArray(identity.breadcrumbs) || identity.breadcrumbs.length > 20) return;
+      if (!Array.isArray(identity.breadcrumbs) || identity.breadcrumbs.length > 20) return false;
       event.breadcrumbs = [];
       for (const marker of identity.breadcrumbs) {
-        if (typeof marker !== "string" || !marker || marker.length > 100) return;
+        if (typeof marker !== "string" || !marker || marker.length > 100) return false;
         event.breadcrumbs.push({ category: marker });
       }
     }
     if (traceId !== undefined) {
-      if (typeof traceId !== "string" || !/^[0-9a-f]{32}$/.test(traceId) || /^0+$/.test(traceId)) return;
+      if (typeof traceId !== "string" || !/^[0-9a-f]{32}$/.test(traceId) || /^0+$/.test(traceId)) return false;
       event.contexts = { trace: { trace_id: traceId, span_id: randomBytes(8).toString("hex") } };
     }
     if (kind === "exception") event.exception = { values: [{ type: name }] };
     else event.message = name;
-    Promise.resolve(transport.send(createEventEnvelope(event))).catch(() => {});
+    const delivery = transport.send(createEventEnvelope(event));
+    pending++;
+    const settled = () => { pending--; };
+    void Promise.resolve(delivery).then(settled, settled);
+    return true;
   }
 
   return { send, flush: transport.flush };

@@ -14,39 +14,76 @@ function createReporter(options) {
         if (!options?.dsn)
             return exports.noopReporter;
         const { module, release, environment, sampleRate, throttleMs, redact } = options;
+        const { handled, fatal } = options.dailyBudget;
+        if (![handled, fatal].every(limit => Number.isSafeInteger(limit) && limit >= 0))
+            return exports.noopReporter;
         if (![module, release, environment].every(isLabel) || typeof redact !== "function" ||
             !Number.isFinite(sampleRate) || sampleRate < 0 || sampleRate > 1 ||
             !Number.isSafeInteger(throttleMs) || throttleMs < 0)
             return exports.noopReporter;
         const transport = (0, transport_1.openTransport)(options.dsn, { module, release, environment });
         const recent = new Map();
+        const dayMs = 24 * 60 * 60 * 1000;
+        let resetAt = performance.now() + dayMs;
+        let remainingHandled = handled;
+        let remainingFatal = fatal;
         let closed = false;
         function capture(input) {
             try {
-                if (closed || Math.random() >= sampleRate)
+                if (closed)
                     return;
                 const identity = redact(input);
                 if (identity instanceof Promise) {
                     void identity.catch(() => { });
                     return;
                 }
-                if (!identity || !isLabel(identity.name))
+                if (!identity)
                     return;
-                if (identity.callSite !== undefined && !isLabel(identity.callSite))
+                const { name, callSite, level } = identity;
+                if (!isLabel(name) || !isLabel(callSite))
                     return;
-                if (throttleMs > 0) {
-                    const now = performance.now();
-                    for (const [key, expiry] of recent) {
-                        if (expiry > now)
-                            break;
-                        recent.delete(key);
-                    }
-                    const key = JSON.stringify([input.kind, identity.name, identity.callSite]);
-                    if (recent.has(key) || recent.size >= 1024)
-                        return;
-                    recent.set(key, now + throttleMs);
+                if (input.kind === "message" && level !== "error")
+                    return;
+                if (level !== undefined && level !== "error" && level !== "fatal")
+                    return;
+                const now = performance.now();
+                if (now >= resetAt) {
+                    resetAt = now + dayMs;
+                    remainingHandled = handled;
+                    remainingFatal = fatal;
                 }
-                transport.send(input.kind, identity);
+                const isFatal = level === "fatal";
+                let key;
+                if (isFatal) {
+                    if (!remainingFatal)
+                        return;
+                }
+                else {
+                    if (!remainingHandled || Math.random() >= sampleRate)
+                        return;
+                    if (throttleMs > 0) {
+                        for (const [entry, expiry] of recent) {
+                            if (expiry > now)
+                                break;
+                            recent.delete(entry);
+                        }
+                        key = JSON.stringify([input.kind, name, callSite]);
+                        if (recent.has(key) || recent.size >= 1024)
+                            return;
+                    }
+                }
+                const queued = transport.send(input.kind, {
+                    name, callSite, level, code: identity.code, tags: identity.tags,
+                    traceId: identity.traceId, breadcrumbs: identity.breadcrumbs,
+                });
+                if (!queued)
+                    return;
+                if (isFatal)
+                    remainingFatal--;
+                else
+                    remainingHandled--;
+                if (key !== undefined)
+                    recent.set(key, now + throttleMs);
             }
             catch {
                 // Discard events that cannot be classified or queued.
