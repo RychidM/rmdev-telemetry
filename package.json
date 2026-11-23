@@ -20,7 +20,8 @@
   ],
   "scripts": {
     "build": "tsc",
-    "test": "npm run build && node --test test/*.test.mjs"
+    "test": "npm run build && node --test test/*.test.mjs",
+    "release:pr": "bash scripts/release-pr.sh"
   },
   "dependencies": {
     "@sentry/core": "11.16.0"
