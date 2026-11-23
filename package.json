@@ -1,0 +1,13 @@
+{
+  "name": "@rmdev/telemetry",
+  "version": "0.1.0",
+  "description": "Policy-injected error reporting for Node.js services",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "typescript": "5.9.3"
+  }
+}
