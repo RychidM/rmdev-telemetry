@@ -1,6 +1,6 @@
 {
   "name": "@rmdev/telemetry",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Policy-injected error reporting for Node.js services",
   "type": "commonjs",
   "main": "./dist/index.js",
