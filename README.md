@@ -32,3 +32,7 @@ At a fatal startup boundary, call `reporter.captureException(error, { site: "sta
 Each reporter has separate 24-hour limits for handled failures and crashes. A service supplies both limits at startup. For example, a handled limit of five allows one running copy to attempt five handled reports during its window. Each replica and each restarted process has a fresh allowance.
 
 Build and test with `npm ci && npm test`. Consumers can install from a full Git commit SHA with lifecycle scripts disabled. The compiled package is in `dist/`. See the [build and rollout spec](docs/build.md).
+
+## GitHub releases
+
+To release a new version, run `npm version patch --no-git-tag-version` (or use `minor` or `major`) and include the package and lockfile changes in the pull request. After CI passes on the merged commit, GitHub Actions publishes a release tagged with the package version, such as `v0.1.0`. Merges at an already released version keep the existing tag.
